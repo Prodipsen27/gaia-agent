@@ -34,8 +34,8 @@ export const scrapeWebsite = tool(
 
       let content = scrapeResult.markdown || scrapeResult.data?.markdown || "";
       if (!content && scrapeResult.error) {
-        if (scrapeResult.status === 402) {
-          console.warn("⚠️ Firecrawl credit limit reached. Falling back to basic scraper...");
+        if ([401, 402, 403].includes(scrapeResult.status)) {
+          console.warn(`⚠️ Firecrawl error ${scrapeResult.status}. Falling back to basic scraper...`);
           return await fallbackScrape(url);
         }
         console.error(`❌ Scrape failed: ${scrapeResult.error}`);
@@ -51,8 +51,8 @@ export const scrapeWebsite = tool(
       
       return content || "No content found.";
     } catch (err) {
-      if (err.status === 402 || err.message?.includes("402")) {
-        console.warn("⚠️ Firecrawl credit limit reached. Falling back to basic scraper...");
+      if ([401, 402, 403].includes(err.status) || /401|402|403/.test(err.message)) {
+        console.warn(`⚠️ Firecrawl error ${err.status || 'API'}. Falling back to basic scraper...`);
         return await fallbackScrape(url);
       }
       console.error(`💥 Scrape error for ${url}:`, err);
@@ -81,8 +81,8 @@ export const webSearch = tool(
 
       const results = searchResult.data || searchResult.web || [];
       if (results.length === 0 && searchResult.error) {
-        if (searchResult.status === 402) {
-          console.warn("⚠️ Firecrawl credit limit reached. Falling back to DuckDuckGo...");
+        if ([401, 402, 403].includes(searchResult.status)) {
+          console.warn(`⚠️ Firecrawl error ${searchResult.status}. Falling back to DuckDuckGo...`);
           return await fallbackSearch(query);
         }
         return `Search failed: ${searchResult.error}`;
@@ -95,8 +95,8 @@ export const webSearch = tool(
         .map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.description || r.snippet || r.text || ""}`)
         .join("\n\n");
     } catch (err) {
-      if (err.status === 402 || err.message?.includes("402")) {
-        console.warn("⚠️ Firecrawl credit limit reached. Falling back to DuckDuckGo...");
+      if ([401, 402, 403].includes(err.status) || /401|402|403/.test(err.message)) {
+        console.warn(`⚠️ Firecrawl error ${err.status || 'API'}. Falling back to DuckDuckGo...`);
         return await fallbackSearch(query);
       }
       console.error(`💥 Search error for "${query}":`, err);
