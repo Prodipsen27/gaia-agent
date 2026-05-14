@@ -40,7 +40,7 @@ const llm = new ChatOpenAI({
   modelName: "Qwen/Qwen2.5-72B-Instruct",
   apiKey: process.env.HF_TOKEN,
   configuration: {
-    baseURL: "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1",
+    baseURL: "https://api-inference.huggingface.co/v1",
   },
   temperature: 0,
 });
@@ -49,11 +49,12 @@ const miniLlm = new ChatOpenAI({
   modelName: "Qwen/Qwen2.5-72B-Instruct",
   apiKey: process.env.HF_TOKEN,
   configuration: {
-    baseURL: "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1",
+    baseURL: "https://api-inference.huggingface.co/v1",
   },
   temperature: 0,
   maxTokens: 1024,
 });
+
 
 
 
