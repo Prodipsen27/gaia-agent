@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { allTools } from "./tools.js";
@@ -55,6 +56,14 @@ const geminiModel = new ChatGoogleGenerativeAI({
   temperature: 0,
 });
 
+const githubModel = new ChatOpenAI({
+  modelName: "gpt-4o", // High-precision reasoning from GitHub
+  apiKey: process.env.GITHUB_TOKEN,
+  configuration: {
+    baseURL: "https://models.inference.ai.azure.com",
+  },
+  temperature: 0,
+});
 
 /** Router: Picks the right model per question */
 export function pickModel(question = "", filePath = "") {
@@ -78,10 +87,19 @@ export function pickModel(question = "", filePath = "") {
     return geminiModel;
   }
 
-  // 4. Default / Reasoning / Math → Groq (Extreme speed & logic)
-  console.log(`  🌐 Routing to Groq (Reasoning/Search task)`);
+  // 4. Hard Reasoning / Exact Math / Counting → GitHub GPT-4o (Most reliable)
+  if (q.includes("calculate") || q.includes("how many") || 
+      q.includes("exact") || q.includes("list") || 
+      q.includes("math") || q.length > 500) {
+    console.log(`  🧠 Routing to GitHub (High-precision reasoning task)`);
+    return githubModel;
+  }
+
+  // 5. Default / Search → Groq (Extreme speed)
+  console.log(`  🌐 Routing to Groq (General reasoning/Search task)`);
   return groqModel;
 }
+
 
 
 
