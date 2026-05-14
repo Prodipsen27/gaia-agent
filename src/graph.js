@@ -34,25 +34,18 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// ── Step 2: Initialize Models (Hugging Face Inference API) ──────────
-// Qwen 2.5 72B is excellent for tool calling and reasoning
-const llm = new ChatOpenAI({
-  modelName: "Qwen/Qwen2.5-72B-Instruct",
-  apiKey: process.env.HF_TOKEN,
-  configuration: {
-    baseURL: "https://api-inference.huggingface.co/v1",
-  },
+// ── Step 2: Initialize Models (Groq - High Speed & Reliable) ──────────
+// Llama 3.3 70B is one of the best open models for tool-calling
+const llm = new ChatGroq({
+  model: "llama-3.3-70b-versatile",
+  apiKey: process.env.GROQ_API_KEY,
   temperature: 0,
 });
 
-const miniLlm = new ChatOpenAI({
-  modelName: "Qwen/Qwen2.5-72B-Instruct",
-  apiKey: process.env.HF_TOKEN,
-  configuration: {
-    baseURL: "https://api-inference.huggingface.co/v1",
-  },
+const miniLlm = new ChatGroq({
+  model: "llama-3.1-8b-instant",
+  apiKey: process.env.GROQ_API_KEY,
   temperature: 0,
-  maxTokens: 1024,
 });
 
 
