@@ -1,0 +1,11 @@
+node_modules
+tmp
+.env
+.git
+.gitignore
+scratch
+*.py
+*.png
+*.jpg
+*.pdf
+*.xlsx

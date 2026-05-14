@@ -1,0 +1,7 @@
+node_modules
+tmp
+.env
+.DS_Store
+*.pyc
+__pycache__
+scratch
