@@ -42,11 +42,19 @@ const groqModel = new ChatGroq({
   temperature: 0,
 });
 
+// Fast model for simple tasks
+const miniLlm = new ChatGroq({
+  model: "llama-3.1-8b-instant",
+  apiKey: process.env.GROQ_API_KEY,
+  temperature: 0,
+});
+
 const geminiModel = new ChatGoogleGenerativeAI({
-  model: "gemini-1.5-flash", // Keeping Gemini 1.5 Flash as requested
+  model: "gemini-1.5-flash-latest", // Updated for reliability
   apiKey: process.env.GOOGLE_API_KEY,
   temperature: 0,
 });
+
 
 /** Router: Picks the right model per question */
 export function pickModel(question = "", filePath = "") {
