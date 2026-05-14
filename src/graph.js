@@ -43,27 +43,50 @@ const groqModel = new ChatGroq({
   temperature: 0,
 });
 
-// Fast model for simple tasks
+const geminiModel = new ChatGoogleGenerativeAI({
+  model: "gemini-3-flash-preview",
+  apiKey: process.env.GOOGLE_API_KEY,
+  temperature: 0,
+});
+
+const githubModel = new ChatOpenAI({
+  modelName: "gpt-4o",
+  apiKey: process.env.GITHUB_TOKEN,
+  configuration: { baseURL: "https://models.inference.ai.azure.com" },
+  temperature: 0,
+});
+
+const hfModel = new ChatOpenAI({
+  modelName: "Qwen/Qwen2.5-72B-Instruct",
+  apiKey: process.env.HF_TOKEN,
+  configuration: { baseURL: "https://api-inference.huggingface.co/v1" },
+  temperature: 0,
+});
+
+// Fast model for formatting (using Groq mini or GitHub mini)
 const miniLlm = new ChatGroq({
   model: "llama-3.1-8b-instant",
   apiKey: process.env.GROQ_API_KEY,
   temperature: 0,
 });
 
-const geminiModel = new ChatGoogleGenerativeAI({
-  model: "gemini-3-flash-preview", // Updated for reliability
-  apiKey: process.env.GOOGLE_API_KEY,
-  temperature: 0,
-});
+/** Router: Picks the prioritized list of models per question */
+export function getModelPool(question = "", filePath = "") {
+  const q = question.toLowerCase();
+  
+  // Vision tasks
+  if (filePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(filePath)) {
+    return [geminiModel, githubModel]; // GitHub GPT-4o also has vision
+  }
 
-const githubModel = new ChatOpenAI({
-  modelName: "gpt-4o", // High-precision reasoning from GitHub
-  apiKey: process.env.GITHUB_TOKEN,
-  configuration: {
-    baseURL: "https://models.inference.ai.azure.com",
-  },
-  temperature: 0,
-});
+  // YouTube/Large Files
+  if (q.includes("youtube.com") || q.includes("youtu.be") || (filePath && /\.(pdf|xlsx|csv|xls|docx)$/i.test(filePath))) {
+    return [geminiModel, hfModel]; // HF Qwen also has long context
+  }
+
+  // General Reasoning (Tiered)
+  return [groqModel, githubModel, hfModel];
+}
 
 /** Router: Picks the right model per question */
 export function pickModel(question = "", filePath = "") {
@@ -108,36 +131,44 @@ export function pickModel(question = "", filePath = "") {
 
 // ── Step 3: Node implementations ─────────────────────────────────────
 
-/** Thinking Node: Calls LLM to decide next steps. */
+/** Thinking Node: Calls LLM with automatic fallback logic. */
 const agent = async (state) => {
-  // Pick the best model for this specific question/file
-  const model = pickModel(state.question, state.file_path);
-  const boundModel = model.bindTools(allTools);
+  const pool = getModelPool(state.question, state.file_path);
+  let response = null;
+  let lastError = null;
 
-  // Prune messages to stay within a reasonable limit
+  // Prune messages to stay within limits
   let prunedMessages = [...state.messages];
   const totalChars = prunedMessages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
-
   if (totalChars > 100000) {
-    console.log(`✂️ Pruning messages (current total: ${totalChars} chars)...`);
     const fixed = [prunedMessages[0], prunedMessages[1]];
-    let tailStart = prunedMessages.length - 15;
-    if (tailStart < 2) tailStart = 2;
-
-    // Safety: don't start the slice with a tool message
-    while (tailStart > 2 && prunedMessages[tailStart]._getType() === "tool") {
-      tailStart--;
-    }
+    let tailStart = Math.max(2, prunedMessages.length - 15);
+    while (tailStart > 2 && prunedMessages[tailStart]._getType() === "tool") tailStart--;
     prunedMessages = [...fixed, ...prunedMessages.slice(tailStart)];
   }
 
-  console.log(`🧠 Agent is thinking... (${prunedMessages.length} messages, ${totalChars} chars)`);
-  const response = await boundModel.invoke(prunedMessages);
+  // Iterate through available models in the pool
+  for (const model of pool) {
+    try {
+      const modelName = model.modelName || model.model || "Primary";
+      console.log(`🧠 Agent is thinking using ${modelName}...`);
+      
+      const boundModel = model.bindTools(allTools);
+      response = await boundModel.invoke(prunedMessages);
+      break; // Success! Exit the pool loop
+    } catch (err) {
+      lastError = err;
+      if (err.status === 429 || err.message.includes("429") || err.message.includes("quota") || err.message.includes("limit")) {
+        console.warn(`⚠️ Model limit hit. Switching to next available model in pool...`);
+        continue; // Try next model
+      }
+      throw err; // Critical error, don't fall back
+    }
+  }
 
-  const content = typeof response.content === "string"
-    ? response.content
-    : JSON.stringify(response.content);
+  if (!response) throw lastError || new Error("All models in pool failed.");
 
+  const content = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
   if (content && content.trim()) {
     console.log(`🤖 Agent thought: ${content.substring(0, 150)}...`);
   }
@@ -147,6 +178,7 @@ const agent = async (state) => {
   }
   return { messages: [response] };
 };
+
 
 
 /** Tool Execution Node: Built-in handler for tool calls. */
