@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { allTools } from "./tools.js";
@@ -34,58 +35,78 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// ── Step 2: Initialize Models (Groq - High Speed & Reliable) ──────────
-// Llama 3.3 70B is one of the best open models for tool-calling
-const llm = new ChatGroq({
+// ── Model Pool (Free Tier Optimization) ──────────────────────────────
+const groqModel = new ChatGroq({
   model: "llama-3.3-70b-versatile",
   apiKey: process.env.GROQ_API_KEY,
   temperature: 0,
 });
 
-const miniLlm = new ChatGroq({
-  model: "llama-3.1-8b-instant",
-  apiKey: process.env.GROQ_API_KEY,
+const geminiModel = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash", // Keeping Gemini 1.5 Flash as requested
+  apiKey: process.env.GOOGLE_API_KEY,
   temperature: 0,
 });
 
+/** Router: Picks the right model per question */
+export function pickModel(question = "", filePath = "") {
+  const q = question.toLowerCase();
+
+  // 1. Images → Gemini (Superior vision)
+  if (filePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(filePath)) {
+    console.log(`  🎨 Routing to Gemini (Image task detected)`);
+    return geminiModel;
+  }
+
+  // 2. YouTube/Video → Gemini (Native multimodal/long context)
+  if (q.includes("youtube.com") || q.includes("youtu.be")) {
+    console.log(`  📺 Routing to Gemini (YouTube task detected)`);
+    return geminiModel;
+  }
+
+  // 3. Complex Files (PDF, Excel) → Gemini (Long context window)
+  if (filePath && /\.(pdf|xlsx|csv|xls|docx)$/i.test(filePath)) {
+    console.log(`  📄 Routing to Gemini (File analysis task detected)`);
+    return geminiModel;
+  }
+
+  // 4. Default / Reasoning / Math → Groq (Extreme speed & logic)
+  console.log(`  🌐 Routing to Groq (Reasoning/Search task)`);
+  return groqModel;
+}
 
 
 
-const chatWithTools = llm.bindTools(allTools);
+
+// Tools will be bound dynamically in the agent node
 
 // ── Step 3: Node implementations ─────────────────────────────────────
 
 /** Thinking Node: Calls LLM to decide next steps. */
 const agent = async (state) => {
-  // Prune messages to stay within a reasonable limit (e.g. 100k chars ~ 25k tokens)
+  // Pick the best model for this specific question/file
+  const model = pickModel(state.question, state.file_path);
+  const boundModel = model.bindTools(allTools);
+
+  // Prune messages to stay within a reasonable limit
   let prunedMessages = [...state.messages];
   const totalChars = prunedMessages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
   
   if (totalChars > 100000) {
     console.log(`✂️ Pruning messages (current total: ${totalChars} chars)...`);
-    // Keep System (0) and original Human (1)
     const fixed = [prunedMessages[0], prunedMessages[1]];
-    
-    // Grab the last few messages, but ensure we don't start with a ToolMessage
-    // whose AIMessage was pruned.
-    let tailStart = prunedMessages.length - 15; // Increased to 15 for more context
+    let tailStart = prunedMessages.length - 15;
     if (tailStart < 2) tailStart = 2;
     
-    // If the tail starts with a ToolMessage, move back until we find the AIMessage
-    while (tailStart > 2 && (prunedMessages[tailStart]._getType() === "tool" || prunedMessages[tailStart].tool_calls?.length > 0)) {
+    // Safety: don't start the slice with a tool message
+    while (tailStart > 2 && prunedMessages[tailStart]._getType() === "tool") {
       tailStart--;
     }
-    
-    prunedMessages = [
-      ...fixed,
-      ...prunedMessages.slice(tailStart)
-    ];
-  } else if (totalChars > 80000) {
-    console.warn(`⚠️ Token Warning: Message history is getting large (${totalChars} chars).`);
+    prunedMessages = [...fixed, ...prunedMessages.slice(tailStart)];
   }
 
   console.log(`🧠 Agent is thinking... (${prunedMessages.length} messages, ${totalChars} chars)`);
-  const response = await chatWithTools.invoke(prunedMessages);
+  const response = await boundModel.invoke(prunedMessages);
   
   const content = typeof response.content === "string" 
     ? response.content 
@@ -97,11 +118,10 @@ const agent = async (state) => {
 
   if (response.tool_calls?.length > 0) {
     console.log(`🛠️ Agent called tools: ${response.tool_calls.map(tc => tc.name).join(", ")}`);
-  } else {
-    console.log(`💭 Agent is formulating final response...`);
   }
   return { messages: [response] };
 };
+
 
 /** Tool Execution Node: Built-in handler for tool calls. */
 const toolNode = new ToolNode(allTools);
