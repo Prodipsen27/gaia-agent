@@ -72,36 +72,31 @@ export const scrapeWebsite = tool(
 export const webSearch = tool(
   async ({ query }) => {
     const apiKey = process.env.FIRECRAWL_API_KEY;
-    if (!apiKey) return "ERROR: FIRECRAWL_API_KEY not set in .env";
-
     try {
+      if (!apiKey || apiKey === "YOUR_FIRECRAWL_KEY" || apiKey.length < 10) {
+        return await fallbackSearch(query);
+      }
+
+
       console.log(`🔍 Searching for: "${query}"...`);
       const app = new Firecrawl({ apiKey });
       const searchResult = await app.search(query, { limit: 5 });
 
       const results = searchResult.data || searchResult.web || [];
       if (results.length === 0 && searchResult.error) {
-        if ([401, 402, 403].includes(searchResult.status)) {
-          console.warn(`⚠️ Firecrawl error ${searchResult.status}. Falling back to DuckDuckGo...`);
-          return await fallbackSearch(query);
-        }
-        return `Search failed: ${searchResult.error}`;
+        console.warn(`⚠️ Firecrawl error. Falling back to DuckDuckGo...`);
+        return await fallbackSearch(query);
       }
 
       console.log(`✅ Found ${results.length} results.`);
-      if (results.length === 0) return "No results found.";
-
       return results
         .map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.description || r.snippet || r.text || ""}`)
         .join("\n\n");
     } catch (err) {
-      if ([401, 402, 403].includes(err.status) || /401|402|403/.test(err.message)) {
-        console.warn(`⚠️ Firecrawl error ${err.status || 'API'}. Falling back to DuckDuckGo...`);
-        return await fallbackSearch(query);
-      }
-      console.error(`💥 Search error for "${query}":`, err);
-      return `Search error: ${err.message}`;
+      console.warn(`⚠️ Firecrawl failed. Using DuckDuckGo fallback...`);
+      return await fallbackSearch(query);
     }
+
   },
   {
     name: "web_search",
@@ -313,9 +308,10 @@ async function fallbackSearch(query) {
 import sys
 import json
 import warnings
-# Suppress the ddgs rename warning
-warnings.filterwarnings("ignore", category=RuntimeWarning, module='duckduckgo_search')
 from duckduckgo_search import DDGS
+
+# Suppress the ddgs rename warning
+warnings.filterwarnings("ignore", message="This package .* has been renamed to ddgs")
 
 try:
     with DDGS() as ddgs:
@@ -323,7 +319,6 @@ try:
         print(json.dumps(results))
 except Exception as e:
     print(json.dumps({"error": str(e)}))
-    sys.exit(1)
 `;
 
     const tmpFile = path.join(TMP_DIR, `ddg_${Date.now()}.py`);
@@ -331,14 +326,16 @@ except Exception as e:
     const output = execSync(`python "${tmpFile}"`, { encoding: "utf-8" });
     fs.unlinkSync(tmpFile);
     
-    const data = JSON.parse(output);
-    if (data.error) return `DuckDuckGo error: ${data.error}`;
+    const data = JSON.parse(output.trim());
+    if (data.error) return `Search failed: ${data.error}`;
+    if (!data.length) return "No results found.";
     
     return data.map((r, i) => `[${i + 1}] ${r.title}\n${r.href}\n${r.body}`).join("\n\n");
   } catch (err) {
     return `Fallback search failed: ${err.message}`;
   }
 }
+
 
 async function fallbackScrape(url) {
   try {
