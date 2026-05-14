@@ -1,7 +1,6 @@
-node_modules
-tmp
+node_modules/
+tmp/
 .env
+dist/
+*.log
 .DS_Store
-*.pyc
-__pycache__
-scratch
