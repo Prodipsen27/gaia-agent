@@ -1,7 +1,6 @@
 import dotenv from "dotenv";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
-import { ChatOpenAI } from "@langchain/openai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatGroq } from "@langchain/groq";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { allTools } from "./tools.js";
@@ -9,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
 
 // ── Step 1: Define the State ────────────────────────────────────────
 const AgentState = Annotation.Root({
