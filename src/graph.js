@@ -51,7 +51,7 @@ const miniLlm = new ChatGroq({
 });
 
 const geminiModel = new ChatGoogleGenerativeAI({
-  model: "gemini-1.5-flash-latest", // Updated for reliability
+  model: "gemini-3-flash-preview", // Updated for reliability
   apiKey: process.env.GOOGLE_API_KEY,
   temperature: 0,
 });
@@ -88,9 +88,9 @@ export function pickModel(question = "", filePath = "") {
   }
 
   // 4. Hard Reasoning / Exact Math / Counting → GitHub GPT-4o (Most reliable)
-  if (q.includes("calculate") || q.includes("how many") || 
-      q.includes("exact") || q.includes("list") || 
-      q.includes("math") || q.length > 500) {
+  if (q.includes("calculate") || q.includes("how many") ||
+    q.includes("exact") || q.includes("list") ||
+    q.includes("math") || q.length > 500) {
     console.log(`  🧠 Routing to GitHub (High-precision reasoning task)`);
     return githubModel;
   }
@@ -117,13 +117,13 @@ const agent = async (state) => {
   // Prune messages to stay within a reasonable limit
   let prunedMessages = [...state.messages];
   const totalChars = prunedMessages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
-  
+
   if (totalChars > 100000) {
     console.log(`✂️ Pruning messages (current total: ${totalChars} chars)...`);
     const fixed = [prunedMessages[0], prunedMessages[1]];
     let tailStart = prunedMessages.length - 15;
     if (tailStart < 2) tailStart = 2;
-    
+
     // Safety: don't start the slice with a tool message
     while (tailStart > 2 && prunedMessages[tailStart]._getType() === "tool") {
       tailStart--;
@@ -133,11 +133,11 @@ const agent = async (state) => {
 
   console.log(`🧠 Agent is thinking... (${prunedMessages.length} messages, ${totalChars} chars)`);
   const response = await boundModel.invoke(prunedMessages);
-  
-  const content = typeof response.content === "string" 
-    ? response.content 
+
+  const content = typeof response.content === "string"
+    ? response.content
     : JSON.stringify(response.content);
-    
+
   if (content && content.trim()) {
     console.log(`🤖 Agent thought: ${content.substring(0, 150)}...`);
   }
