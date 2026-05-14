@@ -310,15 +310,22 @@ export const analyzeImage = tool(
 async function fallbackSearch(query) {
   try {
     const pythonCode = `
-from duckduckgo_search import DDGS
+import sys
 import json
+import warnings
+# Suppress the ddgs rename warning
+warnings.filterwarnings("ignore", category=RuntimeWarning, module='duckduckgo_search')
+from duckduckgo_search import DDGS
+
 try:
     with DDGS() as ddgs:
         results = [r for r in ddgs.text("${query.replace(/"/g, '\\"')}", max_results=5)]
         print(json.dumps(results))
 except Exception as e:
     print(json.dumps({"error": str(e)}))
+    sys.exit(1)
 `;
+
     const tmpFile = path.join(TMP_DIR, `ddg_${Date.now()}.py`);
     fs.writeFileSync(tmpFile, pythonCode);
     const output = execSync(`python "${tmpFile}"`, { encoding: "utf-8" });

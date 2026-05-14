@@ -5,7 +5,11 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { allTools } from "./tools.js";
-dotenv.config();
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
 // ── Step 1: Define the State ────────────────────────────────────────
 const AgentState = Annotation.Root({
   messages: Annotation({
@@ -30,20 +34,27 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// ── Step 2: Initialize Models (Gemini) ──────────────────────────────
-const llm = new ChatGoogleGenerativeAI({
-  model: "gemini-3-flash-preview",
-  apiKey: process.env.GOOGLE_API_KEY,
+// ── Step 2: Initialize Models (Hugging Face Inference API) ──────────
+// Qwen 2.5 72B is excellent for tool calling and reasoning
+const llm = new ChatOpenAI({
+  modelName: "Qwen/Qwen2.5-72B-Instruct",
+  apiKey: process.env.HF_TOKEN,
+  configuration: {
+    baseURL: "https://api-inference.huggingface.co/v1/",
+  },
   temperature: 0,
-  maxOutputTokens: 8192,
 });
 
-const miniLlm = new ChatGoogleGenerativeAI({
-  model: "gemini-3-flash-preview",
-  apiKey: process.env.GOOGLE_API_KEY,
+const miniLlm = new ChatOpenAI({
+  modelName: "Qwen/Qwen2.5-72B-Instruct",
+  apiKey: process.env.HF_TOKEN,
+  configuration: {
+    baseURL: "https://api-inference.huggingface.co/v1/",
+  },
   temperature: 0,
-  maxOutputTokens: 1024,
+  maxTokens: 1024,
 });
+
 
 const chatWithTools = llm.bindTools(allTools);
 
