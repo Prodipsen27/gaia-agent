@@ -65,7 +65,7 @@ async function main() {
 
       const humanContent = isImage
         ? [
-            { type: "text", text: q.question },
+            { type: "text", text: `${q.question}${filePrompt}` },
             {
               type: "image_url",
               image_url: {
@@ -85,10 +85,10 @@ async function main() {
             "1. NEVER say you cannot find information after only 1-2 searches. GAIA answers are often buried.\n" +
             "2. Try at least 3-5 different search queries with different keywords before giving up.\n" +
             "3. If search snippets are insufficient, use scrape_website on the most relevant URLs to find details.\n" +
-            "4. If a question refers to a YouTube video, use yt_transcript to get the full context.\n" +
+            "4. MANDATORY: If a question contains a YouTube link, you MUST call yt_transcript immediately. Do NOT search for video summaries unless yt_transcript reports failure.\n" +
             "5. If a question involves an image (chess, charts, diagrams), use analyze_image.\n" +
-            "6. If read_file reports a binary file (PDF, Excel, Docx), use execute_python with pdfplumber or pandas to extract the data.\n" +
-            "7. For any math, counting, or complex data processing, ALWAYS use execute_python to ensure accuracy.\n" +
+            "6. If read_file reports a binary file (PDF, Excel, Docx), use execute_python. ALWAYS use the EXACT ABSOLUTE PATH provided for the file. NEVER assume filenames like 'sales_data.xlsx' or 'data.csv'.\n" +
+            "7. For any math, counting, or complex data processing, ALWAYS use execute_python. Use the provided file_path directly in your code.\n" +
             "8. Final answers should be BARE strings (e.g., '42', 'Paris', '2023-01-01'). No units or extra words unless requested."
           ),
           new HumanMessage(humanContent)
@@ -115,21 +115,14 @@ async function main() {
         } catch (err) {
           attempt++;
           console.error(`❌ Error solving ${q.task_id} (Attempt ${attempt}):`, err.message);
-          if (err.message.includes("RateLimitReached")) {
-            console.warn("🛑 Rate limit hit! Skipping question...");
-            answers.push({
-              task_id: q.task_id,
-              submitted_answer: "ERROR: Rate limit exceeded",
-            });
-            break;
-          }
+          
           if (attempt < 2) {
-            console.log("🔄 Retrying in 5 seconds...");
-            await sleep(5000);
+            console.log("🔄 Retrying whole graph in 10 seconds...");
+            await sleep(10000);
           } else {
             answers.push({
               task_id: q.task_id,
-              submitted_answer: "ERROR: Max retries reached",
+              submitted_answer: `ERROR: ${err.message}`,
             });
           }
         }

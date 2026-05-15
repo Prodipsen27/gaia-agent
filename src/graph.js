@@ -34,7 +34,14 @@ const AgentState = Annotation.Root({
     reducer: (_curr, update) => update,
     default: () => "",
   }),
+  current_model_key: Annotation({
+    reducer: (_curr, update) => update,
+    default: () => "groq",
+  }),
 });
+
+// Global state to persist across tasks (questions)
+let persistent_model_key = "groq";
 
 // ── Model Pool (Free Tier Optimization) ──────────────────────────────
 const groqModel = new ChatGroq({
@@ -63,7 +70,14 @@ const hfModel = new ChatOpenAI({
   temperature: 0,
 });
 
-// Fast model for formatting (using Groq mini or GitHub mini)
+const nvidiaModel = new ChatOpenAI({
+  modelName: "meta/llama-3.3-70b-instruct",
+  apiKey: process.env.NVIDIA_API_KEY,
+  configuration: { baseURL: "https://integrate.api.nvidia.com/v1" },
+  temperature: 0,
+});
+
+// Fast model for formatting
 const miniLlm = new ChatGroq({
   model: "llama-3.1-8b-instant",
   apiKey: process.env.GROQ_API_KEY,
@@ -76,58 +90,55 @@ export function getModelPool(question = "", filePath = "") {
   
   // Vision tasks
   if (filePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(filePath)) {
-    return [geminiModel, githubModel]; // GitHub GPT-4o also has vision
+    return [
+      { id: "gemini", model: geminiModel },
+      { id: "github", model: githubModel }
+    ];
   }
 
   // YouTube/Large Files
   if (q.includes("youtube.com") || q.includes("youtu.be") || (filePath && /\.(pdf|xlsx|csv|xls|docx)$/i.test(filePath))) {
-    return [geminiModel, hfModel]; // HF Qwen also has long context
+    return [
+      { id: "gemini", model: geminiModel },
+      { id: "github", model: githubModel },
+      { id: "nvidia", model: nvidiaModel },
+      { id: "hf", model: hfModel }
+    ];
   }
 
   // General Reasoning (Tiered)
-  return [groqModel, githubModel, hfModel];
+  return [
+    { id: "groq", model: groqModel },
+    { id: "github", model: githubModel },
+    { id: "nvidia", model: nvidiaModel },
+    { id: "hf", model: hfModel }
+  ];
 }
 
-/** Router: Picks the right model per question */
+/** Router: Picks the right model per question (Legacy/Reference) */
 export function pickModel(question = "", filePath = "") {
   const q = question.toLowerCase();
 
-  // 1. Images → Gemini (Superior vision)
   if (filePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(filePath)) {
-    console.log(`  🎨 Routing to Gemini (Image task detected)`);
     return geminiModel;
   }
 
-  // 2. YouTube/Video → Gemini (Native multimodal/long context)
   if (q.includes("youtube.com") || q.includes("youtu.be")) {
-    console.log(`  📺 Routing to Gemini (YouTube task detected)`);
     return geminiModel;
   }
 
-  // 3. Complex Files (PDF, Excel) → Gemini (Long context window)
   if (filePath && /\.(pdf|xlsx|csv|xls|docx)$/i.test(filePath)) {
-    console.log(`  📄 Routing to Gemini (File analysis task detected)`);
     return geminiModel;
   }
 
-  // 4. Hard Reasoning / Exact Math / Counting → GitHub GPT-4o (Most reliable)
   if (q.includes("calculate") || q.includes("how many") ||
     q.includes("exact") || q.includes("list") ||
     q.includes("math") || q.length > 500) {
-    console.log(`  🧠 Routing to GitHub (High-precision reasoning task)`);
     return githubModel;
   }
 
-  // 5. Default / Search → Groq (Extreme speed)
-  console.log(`  🌐 Routing to Groq (General reasoning/Search task)`);
   return groqModel;
 }
-
-
-
-
-
-// Tools will be bound dynamically in the agent node
 
 // ── Step 3: Node implementations ─────────────────────────────────────
 
@@ -140,33 +151,60 @@ const agent = async (state) => {
   // Prune messages to stay within limits
   let prunedMessages = [...state.messages];
   const totalChars = prunedMessages.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
-  if (totalChars > 100000) {
-    const fixed = [prunedMessages[0], prunedMessages[1]];
-    let tailStart = Math.max(2, prunedMessages.length - 15);
-    while (tailStart > 2 && prunedMessages[tailStart]._getType() === "tool") tailStart--;
+  if (totalChars > 50000) { // Reduced limit to be safer with free tiers
+    const fixed = [prunedMessages[0]]; // Keep system message
+    let tailStart = Math.max(1, prunedMessages.length - 10);
+    while (tailStart > 1 && prunedMessages[tailStart]._getType() === "tool") tailStart--;
     prunedMessages = [...fixed, ...prunedMessages.slice(tailStart)];
   }
 
-  // Iterate through available models in the pool
-  for (const model of pool) {
+  // Find where to start in the pool based on persistent_model_key
+  const preferredKey = state.messages.length <= 2 ? persistent_model_key : (state.current_model_key || persistent_model_key);
+  let startIndex = pool.findIndex(m => m.id === preferredKey);
+  if (startIndex === -1) startIndex = 0;
+
+  let finalKey = preferredKey;
+
+  for (let i = 0; i < pool.length; i++) {
+    const idx = (startIndex + i) % pool.length;
+    const { id, model } = pool[idx];
+    
     try {
-      const modelName = model.modelName || model.model || "Primary";
-      console.log(`🧠 Agent is thinking using ${modelName}...`);
+      const modelName = model.modelName || model.model || id;
+      console.log(`🧠 Agent is thinking using ${modelName} (Pool Index: ${idx})...`);
       
       const boundModel = model.bindTools(allTools);
       response = await boundModel.invoke(prunedMessages);
-      break; // Success! Exit the pool loop
+      
+      // Check if response is valid
+      if (response && (response.content || response.tool_calls?.length > 0)) {
+        finalKey = id;
+        persistent_model_key = id; // Update global state
+        break; 
+      }
     } catch (err) {
       lastError = err;
-      if (err.status === 429 || err.message.includes("429") || err.message.includes("quota") || err.message.includes("limit")) {
-        console.warn(`⚠️ Model limit hit. Switching to next available model in pool...`);
-        continue; // Try next model
+      const errMsg = err.message || String(err);
+      const isRateLimit = err.status === 429 || 
+                          errMsg.includes("429") || 
+                          errMsg.includes("quota") || 
+                          errMsg.includes("limit") || 
+                          errMsg.includes("Rate limit");
+
+      if (isRateLimit) {
+        console.warn(`⚠️ Model limit hit for ${id}. Switching to next in pool...`);
+        await new Promise(r => setTimeout(r, 1000));
+        continue; 
       }
-      throw err; // Critical error, don't fall back
+      console.error(`❌ Error with ${id}:`, errMsg);
+      continue; 
     }
   }
 
-  if (!response) throw lastError || new Error("All models in pool failed.");
+  if (!response) {
+    console.error("💀 ALL MODELS IN POOL EXHAUSTED.");
+    throw lastError || new Error("All models in pool failed.");
+  }
 
   const content = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
   if (content && content.trim()) {
@@ -176,10 +214,11 @@ const agent = async (state) => {
   if (response.tool_calls?.length > 0) {
     console.log(`🛠️ Agent called tools: ${response.tool_calls.map(tc => tc.name).join(", ")}`);
   }
-  return { messages: [response] };
+  return { 
+    messages: [response],
+    current_model_key: finalKey
+  };
 };
-
-
 
 /** Tool Execution Node: Built-in handler for tool calls. */
 const toolNode = new ToolNode(allTools);

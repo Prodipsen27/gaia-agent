@@ -45,15 +45,32 @@ export async function submitAnswers(username, agentCodeUrl, answers) {
     answers,
   };
 
-  const res = await fetch(`${BASE_URL}/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE_URL}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Submission failed: ${res.status} ${res.statusText}\n${body}`);
+      if (!res.ok) {
+        const body = await res.text();
+        // If it's a 5xx error, we retry. If 4xx, it's likely our fault, so we throw.
+        if (res.status >= 500) {
+          throw new Error(`Server Error (${res.status}): ${body}`);
+        }
+        throw new Error(`Submission failed: ${res.status} ${res.statusText}\n${body}`);
+      }
+      return res.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < 3 && err.message.includes("Server Error")) {
+        console.warn(`⚠️ Submission attempt ${attempt} failed. Retrying in 5 seconds...`);
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+      throw err;
+    }
   }
-  return res.json();
 }
