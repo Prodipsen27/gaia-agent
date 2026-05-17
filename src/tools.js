@@ -403,7 +403,10 @@ export const wikipediaSearch = tool(
         const timeoutId = setTimeout(() => controller.abort(), 20000);
         
         try {
-          const revRes = await fetch(revUrl, { signal: controller.signal });
+          const revRes = await fetch(revUrl, {
+            headers: { "User-Agent": "GAIA-Agent/1.0 (compatible; zxpr27)" },
+            signal: controller.signal
+          });
           const revData = await revRes.json();
 
           const pages = revData.query?.pages;
@@ -434,7 +437,10 @@ export const wikipediaSearch = tool(
       const timeoutId = setTimeout(() => controller.abort(), 20000);
       
       try {
-        const res = await fetch(searchUrl, { signal: controller.signal });
+        const res = await fetch(searchUrl, {
+          headers: { "User-Agent": "GAIA-Agent/1.0 (compatible; zxpr27)" },
+          signal: controller.signal
+        });
         const data = await res.json();
 
         const pages = data.query?.pages;
