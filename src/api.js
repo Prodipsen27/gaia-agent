@@ -8,27 +8,55 @@ const BASE_URL = "https://agents-course-unit4-scoring.hf.space";
  * @returns {Promise<Array<{task_id: string, question: string, file_name?: string}>>}
  */
 export async function fetchQuestions() {
-  const res = await fetch(`${BASE_URL}/questions`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch questions: ${res.status} ${res.statusText}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch(`${BASE_URL}/questions`, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch questions: ${res.status} ${res.statusText}`);
+    }
+    // Added timeout for body parsing
+    const bodyPromise = res.json();
+    return await Promise.race([
+      bodyPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout parsing questions JSON")), 15000))
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return res.json();
 }
 
 /**
  * Download the attached file for a given task (if one exists).
- * Returns the raw Response so callers can decide how to consume it
- * (e.g. .text(), .arrayBuffer(), .blob()).
- * @param {string} taskId — The task_id of the question
+ * Fallback to HF Hub if the scoring server's /files endpoint is 404.
+ * @param {string} taskId   — The task_id of the question
+ * @param {string} fileName — The file_name from the question metadata (needed for extension)
  * @returns {Promise<Response>}
  */
-export async function fetchFile(taskId) {
-  const res = await fetch(`${BASE_URL}/files/${taskId}`);
-  if (res.status === 404) return null; // no file for this task — that's fine
-  if (!res.ok) {
-    throw new Error(`Failed to fetch file for task ${taskId}: ${res.status} ${res.statusText}`);
+export async function fetchFile(taskId, fileName) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s for files
+  try {
+    // Try official scoring endpoint first
+    let res = await fetch(`${BASE_URL}/files/${taskId}`, { signal: controller.signal });
+    
+    if (res.status === 404 && process.env.HF_TOKEN) {
+      const ext = fileName?.split(".").pop();
+      if (ext) {
+        const hfUrl = `https://huggingface.co/datasets/gaia-benchmark/GAIA/resolve/main/2023/validation/${taskId}.${ext}`;
+        const fallbackRes = await fetch(hfUrl, {
+          headers: { "Authorization": `Bearer ${process.env.HF_TOKEN}` },
+          signal: controller.signal
+        });
+        
+        if (fallbackRes.ok) return fallbackRes;
+      }
+    }
+    if (res.status === 404) return null;
+    return res;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return res;
 }
 
 /**
@@ -45,32 +73,25 @@ export async function submitAnswers(username, agentCodeUrl, answers) {
     answers,
   };
 
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await fetch(`${BASE_URL}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+  const res = await fetch(`${BASE_URL}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
-      if (!res.ok) {
-        const body = await res.text();
-        // If it's a 5xx error, we retry. If 4xx, it's likely our fault, so we throw.
-        if (res.status >= 500) {
-          throw new Error(`Server Error (${res.status}): ${body}`);
-        }
-        throw new Error(`Submission failed: ${res.status} ${res.statusText}\n${body}`);
-      }
-      return res.json();
-    } catch (err) {
-      lastError = err;
-      if (attempt < 3 && err.message.includes("Server Error")) {
-        console.warn(`⚠️ Submission attempt ${attempt} failed. Retrying in 5 seconds...`);
-        await new Promise(r => setTimeout(r, 5000));
-        continue;
-      }
-      throw err;
-    }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Submission failed: ${res.status} ${res.statusText}\n${body}`);
   }
+  
+  const data = await res.json();
+  console.log("Submission successful:", data);
+  
+  // Normalize return object for index.js
+  return {
+    ...data,
+    total: data.total_attempted ?? data.total ?? 0,
+    correct: data.correct_count ?? data.correct ?? 0,
+    score: data.score ?? (data.correct_count / data.total_attempted) ?? 0
+  };
 }

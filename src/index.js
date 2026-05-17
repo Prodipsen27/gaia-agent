@@ -27,9 +27,16 @@ async function main() {
     // 2. Fetch all 20 questions
     console.log("📥 Fetching questions from GAIA API...");
     const questions = await fetchQuestions();
-    console.log(`✅ Received ${questions.length} questions.`);
+    const total = Array.isArray(questions) ? questions.length : 0;
+    console.log(`✅ Received ${total} questions.`);
+
+    if (total === 0) {
+      console.warn("⚠️ No questions received. Exiting.");
+      return;
+    }
 
     const answers = [];
+    const resultsJsonl = [];
 
     // 3. Loop through all questions
     for (let i = 0; i < questions.length; i++) {
@@ -43,7 +50,7 @@ async function main() {
       if (q.file_name) {
         console.log(`📎 Downloading attachment: ${q.file_name}...`);
         try {
-          const res = await fetchFile(q.task_id);
+          const res = await fetchFile(q.task_id, q.file_name);
           if (res) {
             localFilePath = path.join(TMP_DIR, q.file_name);
             const buffer = Buffer.from(await res.arrayBuffer());
@@ -57,10 +64,9 @@ async function main() {
 
       // 5. Run the graph with a retry mechanism
       const filePrompt = localFilePath 
-        ? `\n\nNote: A file related to this task has been downloaded to: ${localFilePath}` 
+        ? `\n\nIMPORTANT: A file for this task has been downloaded. The EXACT path is: "${localFilePath}". You MUST use this exact path when calling any file tool. Do not guess or modify the path.`
         : "";
 
-      // Fix 1: Detect if file is an image and use multimodal message
       const isImage = localFilePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(localFilePath);
 
       const humanContent = isImage
@@ -77,20 +83,6 @@ async function main() {
 
       const initialState = {
         messages: [
-          new SystemMessage(
-            "You are an elite GAIA benchmark solver. Use your tools (search, python, file_read, yt_transcript, analyze_image) to find the answer. " +
-            "Work step-by-step. When you have the final answer, state it clearly. " +
-            "The answer must be as concise as possible for exact-match grading.\n\n" +
-            "STRATEGY RULES:\n" +
-            "1. NEVER say you cannot find information after only 1-2 searches. GAIA answers are often buried.\n" +
-            "2. Try at least 3-5 different search queries with different keywords before giving up.\n" +
-            "3. If search snippets are insufficient, use scrape_website on the most relevant URLs to find details.\n" +
-            "4. MANDATORY: If a question contains a YouTube link, you MUST call yt_transcript immediately. Do NOT search for video summaries unless yt_transcript reports failure.\n" +
-            "5. If a question involves an image (chess, charts, diagrams), use analyze_image.\n" +
-            "6. If read_file reports a binary file (PDF, Excel, Docx), use execute_python. ALWAYS use the EXACT ABSOLUTE PATH provided for the file. NEVER assume filenames like 'sales_data.xlsx' or 'data.csv'.\n" +
-            "7. For any math, counting, or complex data processing, ALWAYS use execute_python. Use the provided file_path directly in your code.\n" +
-            "8. Final answers should be BARE strings (e.g., '42', 'Paris', '2023-01-01'). No units or extra words unless requested."
-          ),
           new HumanMessage(humanContent)
         ],
         task_id: q.task_id,
@@ -100,6 +92,8 @@ async function main() {
 
       let attempt = 0;
       let success = false;
+      console.log(`  📁 File path being passed to graph: ${localFilePath || "none"}`);
+
       while (attempt < 2 && !success) {
         try {
           const result = await app.invoke(initialState, { recursionLimit: 50 });
@@ -111,6 +105,19 @@ async function main() {
             task_id: q.task_id,
             submitted_answer: finalAnswer,
           });
+
+          // Collect reasoning trace (all AI messages)
+          const trace = result.messages
+            .filter(m => m._getType() === "ai")
+            .map(m => m.content)
+            .join("\n\n");
+
+          resultsJsonl.push({
+            task_id: q.task_id,
+            model_answer: finalAnswer,
+            reasoning_trace: trace
+          });
+
           success = true;
         } catch (err) {
           attempt++;
@@ -120,32 +127,49 @@ async function main() {
             console.log("🔄 Retrying whole graph in 10 seconds...");
             await sleep(10000);
           } else {
+            const errorMsg = `ERROR: ${err.message}`;
             answers.push({
               task_id: q.task_id,
-              submitted_answer: `ERROR: ${err.message}`,
+              submitted_answer: errorMsg,
+            });
+            resultsJsonl.push({
+              task_id: q.task_id,
+              model_answer: errorMsg,
+              reasoning_trace: "Failed after 2 attempts"
             });
           }
         }
       }
 
-      // 6. Rate limiting (1 second between questions)
+      // 6. Save intermediate results to file
+      try {
+        fs.writeFileSync("results.jsonl", resultsJsonl.map(r => JSON.stringify(r)).join("\n"));
+      } catch (saveErr) {
+        console.error("⚠️ Failed to save results.jsonl:", saveErr.message);
+      }
+
+      // 7. Rate limiting (1 second between questions)
       if (i < questions.length - 1) {
-        await sleep(1000);
+        console.log(`⏲️ Waiting 2 seconds before next task...`);
+        await sleep(2000);
       }
     }
 
-    // 7. Submit all answers
+    // 8. Submit all answers
     console.log("\n📤 Submitting all answers to scoring server...");
     const username = process.env.HF_USERNAME || "anonymous";
-   const agentUrl = process.env.AGENT_CODE_URL || "https://huggingface.co/spaces/zxpr27/gaia-agent/tree/main";// Descriptive URL
+    const agentUrl = process.env.AGENT_CODE_URL || "https://huggingface.co/spaces/zxpr27/gaia-agent";
     
     const scoreReport = await submitAnswers(username, agentUrl, answers);
     
     console.log("\n🏆 --- SCORE REPORT ---");
-    console.log(`Total: ${scoreReport.total}`);
-    console.log(`Correct: ${scoreReport.correct}`);
-    console.log(`Score: ${(scoreReport.score * 100).toFixed(2)}%`);
+    console.log(`Total Attempted: ${scoreReport.total_attempted}`);
+    console.log(`Correct Count:   ${scoreReport.correct_count}`);
+    console.log(`Score:           ${(scoreReport.score * 100).toFixed(2)}%`);
+    console.log(`Message:         ${scoreReport.message || "No message"}`);
     console.log("------------------------");
+
+    console.log("\n✅ Done! Detailed results saved to results.jsonl");
 
   } catch (err) {
     console.error("💥 Critical Failure:", err);
