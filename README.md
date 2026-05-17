@@ -1,6 +1,6 @@
 ---
 title: GAIA Agent
-emoji: robot
+emoji: 🤖
 colorFrom: blue
 colorTo: purple
 sdk: docker
