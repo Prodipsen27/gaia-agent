@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import "./env.js";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -10,10 +10,7 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { allTools } from "./tools.js";
 import { SYSTEM_PROMPT } from "./prompts.js";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
 // SYSTEM_PROMPT is now imported from ./prompts.js
 
 // ── Step 1: Define the State ────────────────────────────────────────
@@ -277,7 +274,7 @@ const agent = async (state) => {
   const baseMessages = [activeSystemMessage, ...nonSystemMessages];
 
   // Find where to start in the pool
-  const preferredKey = state.messages.length <= 2 ? persistent_model_key : (state.current_model_key || persistent_model_key);
+  const preferredKey = state.current_model_key || persistent_model_key;
   let startIndex = pool.findIndex(m => m.id === preferredKey);
   if (startIndex === -1) startIndex = 0;
 
@@ -301,9 +298,10 @@ const agent = async (state) => {
       const boundModel = model.bindTools(allTools);
       const start = Date.now();
       
+      let timeoutId;
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Model ${id} timed out after 120s`)), 120000)
-      );
+        timeoutId = setTimeout(() => reject(new Error(`Model ${id} timed out after 120s`)), 120000)
+    );
 
       response = await Promise.race([
         boundModel.invoke(processedMessages),

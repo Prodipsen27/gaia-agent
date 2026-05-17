@@ -1,16 +1,15 @@
 // src/tools.js — GAIA agent tools
 // Tools: scrape_website, web_search, execute_python, read_file, yt_transcript,
 //        analyze_image, huggingface_hub, wikipedia_search, wayback_machine
+import "./env.js";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { fileURLToPath } from "node:url";
 
-dotenv.config();
 
 import Firecrawl from "@mendable/firecrawl-js";
 
@@ -404,10 +403,18 @@ export const wikipediaSearch = tool(
         
         try {
           const revRes = await fetch(revUrl, {
-            headers: { "User-Agent": "GAIA-Agent/1.0 (compatible; zxpr27)" },
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
             signal: controller.signal
           });
-          const revData = await revRes.json();
+          const contentType = revRes.headers.get("content-type") || "";
+          const text = await revRes.text();
+          let revData;
+          try {
+            revData = JSON.parse(text);
+          } catch (jsonErr) {
+            console.error("Wikipedia API JSON parsing failed:", jsonErr);
+            return `Wikipedia error: API returned non-JSON or invalid content. Is the request blocked or rate-limited? Content: ${text.slice(0, 150)}`;
+          }
 
           const pages = revData.query?.pages;
           if (!pages) return `No Wikipedia article found for "${title}".`;
@@ -438,10 +445,18 @@ export const wikipediaSearch = tool(
       
       try {
         const res = await fetch(searchUrl, {
-          headers: { "User-Agent": "GAIA-Agent/1.0 (compatible; zxpr27)" },
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
           signal: controller.signal
         });
-        const data = await res.json();
+        const contentType = res.headers.get("content-type") || "";
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (jsonErr) {
+          console.error("Wikipedia API JSON parsing failed:", jsonErr);
+          return `Wikipedia error: API returned non-JSON or invalid content. Is the request blocked or rate-limited? Content: ${text.slice(0, 150)}`;
+        }
 
         const pages = data.query?.pages;
         if (!pages) return `No Wikipedia article found for "${title}".`;

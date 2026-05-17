@@ -1,12 +1,12 @@
 // src/index.js — GAIA orchestrator
-import "dotenv/config";
+import "./env.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 import { fetchQuestions, fetchFile, submitAnswers } from "./api.js";
-import { app } from "./graph.js";
+import { app, getModelPool } from "./graph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP_DIR = path.resolve(__dirname, "../tmp");
@@ -44,101 +44,138 @@ async function main() {
       console.log(`\n[${i + 1}/${questions.length}] Solving Task: ${q.task_id}`);
       console.log(`Question: ${q.question.substring(0, 100)}${q.question.length > 100 ? "..." : ""}`);
 
-      let localFilePath = null;
+      try {
+        let localFilePath = null;
 
-      // 4. Download file if attached
-      if (q.file_name) {
-        console.log(`📎 Downloading attachment: ${q.file_name}...`);
-        try {
-          const res = await fetchFile(q.task_id, q.file_name);
-          if (res) {
-            localFilePath = path.join(TMP_DIR, q.file_name);
-            const buffer = Buffer.from(await res.arrayBuffer());
-            fs.writeFileSync(localFilePath, buffer);
-            console.log(`💾 Saved to: ${localFilePath}`);
+        // 4. Download file if attached
+        if (q.file_name) {
+          console.log(`📎 Downloading attachment: ${q.file_name}...`);
+          try {
+            const res = await fetchFile(q.task_id, q.file_name);
+            if (res) {
+              localFilePath = path.join(TMP_DIR, q.file_name);
+              const buffer = Buffer.from(await res.arrayBuffer());
+              fs.writeFileSync(localFilePath, buffer);
+              console.log(`💾 Saved to: ${localFilePath}`);
+            }
+          } catch (err) {
+            console.error(`⚠️ Failed to download file for ${q.task_id}: ${err.message}`);
           }
-        } catch (err) {
-          console.error(`⚠️ Failed to download file for ${q.task_id}: ${err.message}`);
         }
-      }
 
-      // 5. Run the graph with a retry mechanism
-      const filePrompt = localFilePath 
-        ? `\n\nIMPORTANT: A file for this task has been downloaded. The EXACT path is: "${localFilePath}". You MUST use this exact path when calling any file tool. Do not guess or modify the path.`
-        : "";
+        // 5. Run the graph with a retry mechanism
+        const filePrompt = localFilePath 
+          ? `\n\nIMPORTANT: A file for this task has been downloaded. The EXACT path is: "${localFilePath}". You MUST use this exact path when calling any file tool. Do not guess or modify the path.`
+          : "";
 
-      const isImage = localFilePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(localFilePath);
+        const isImage = localFilePath && /\.(png|jpg|jpeg|gif|webp)$/i.test(localFilePath);
 
-      const humanContent = isImage
-        ? [
-            { type: "text", text: `${q.question}${filePrompt}` },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/png;base64,${fs.readFileSync(localFilePath).toString("base64")}`,
+        const humanContent = isImage
+          ? [
+              { type: "text", text: `${q.question}${filePrompt}` },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/png;base64,${fs.readFileSync(localFilePath).toString("base64")}`,
+                },
               },
-            },
-          ]
-        : `${q.question}${filePrompt}`;
+            ]
+          : `${q.question}${filePrompt}`;
 
-      const initialState = {
-        messages: [
-          new HumanMessage(humanContent)
-        ],
-        task_id: q.task_id,
-        question: q.question,
-        file_path: localFilePath,
-      };
+        const initialState = {
+          messages: [
+            new HumanMessage(humanContent)
+          ],
+          task_id: q.task_id,
+          question: q.question,
+          file_path: localFilePath,
+        };
 
-      let attempt = 0;
-      let success = false;
-      console.log(`  📁 File path being passed to graph: ${localFilePath || "none"}`);
+        let success = false;
+        console.log(`  📁 File path being passed to graph: ${localFilePath || "none"}`);
 
-      while (attempt < 2 && !success) {
-        try {
-          const result = await app.invoke(initialState, { recursionLimit: 50 });
-          const finalAnswer = result.final_answer;
-          
-          console.log(`✨ Final Answer: ${finalAnswer}`);
-          
-          answers.push({
-            task_id: q.task_id,
-            submitted_answer: finalAnswer,
-          });
+        const pool = getModelPool(q.question, localFilePath);
 
-          // Collect reasoning trace (all AI messages)
-          const trace = result.messages
-            .filter(m => m._getType() === "ai")
-            .map(m => m.content)
-            .join("\n\n");
+        // Determine the primary model to cycle through each AI API for each question
+        const allApis = ["gemini", "groq", "nvidia", "hf"];
+        const primaryApiId = allApis[i % allApis.length];
 
-          resultsJsonl.push({
-            task_id: q.task_id,
-            model_answer: finalAnswer,
-            reasoning_trace: trace
-          });
+        // Reorder the pool to try the cycled primary API first, followed by others in the pool
+        let reorderedPool = [...pool];
+        const primaryIndex = reorderedPool.findIndex(m => m.id === primaryApiId);
+        if (primaryIndex > -1) {
+          const [primaryModel] = reorderedPool.splice(primaryIndex, 1);
+          reorderedPool.unshift(primaryModel);
+          console.log(`🔄 Cycled primary starting API to: ${primaryApiId} for Question ${i + 1}`);
+        } else {
+          console.log(`🔌 Starting model pool fallback to: ${reorderedPool[0]?.id || "none"} for Question ${i + 1}`);
+        }
 
-          success = true;
-        } catch (err) {
-          attempt++;
-          console.error(`❌ Error solving ${q.task_id} (Attempt ${attempt}):`, err.message);
-          
-          if (attempt < 2) {
-            console.log("🔄 Retrying whole graph in 10 seconds...");
-            await sleep(10000);
-          } else {
-            const errorMsg = `ERROR: ${err.message}`;
+        for (const modelInfo of reorderedPool) {
+          const modelId = modelInfo.id;
+          console.log(`🔌 Attempting task with starting model: ${modelId}`);
+
+          const stateForModel = {
+            ...initialState,
+            current_model_key: modelId,
+          };
+
+          try {
+            const result = await app.invoke(stateForModel, { recursionLimit: 50 });
+            const finalAnswer = result.final_answer;
+            
+            console.log(`✨ Final Answer: ${finalAnswer}`);
+            
             answers.push({
               task_id: q.task_id,
-              submitted_answer: errorMsg,
+              submitted_answer: finalAnswer,
             });
+
+            // Collect reasoning trace (all AI messages)
+            const trace = result.messages
+              .filter(m => m._getType() === "ai")
+              .map(m => m.content)
+              .join("\n\n");
+
             resultsJsonl.push({
               task_id: q.task_id,
-              model_answer: errorMsg,
-              reasoning_trace: "Failed after 2 attempts"
+              model_answer: finalAnswer,
+              reasoning_trace: trace
             });
+
+            success = true;
+            break; // Succeeded! Break the pool loop and proceed.
+          } catch (err) {
+            console.error(`❌ Error solving ${q.task_id} using starting model ${modelId}:`, err.message);
+            console.log("🔄 Falling back to next model in pool after a short pause...");
+            await sleep(2000);
           }
         }
+
+        if (!success) {
+          const errorMsg = `ERROR: All models in pool failed.`;
+          answers.push({
+            task_id: q.task_id,
+            submitted_answer: errorMsg,
+          });
+          resultsJsonl.push({
+            task_id: q.task_id,
+            model_answer: errorMsg,
+            reasoning_trace: "Failed for all models in the pool"
+          });
+        }
+      } catch (innerErr) {
+        console.error(`💥 Unexpected error while solving ${q.task_id}:`, innerErr.message);
+        const errorMsg = `ERROR: Question failed due to an unexpected error.`;
+        answers.push({
+          task_id: q.task_id,
+          submitted_answer: errorMsg,
+        });
+        resultsJsonl.push({
+          task_id: q.task_id,
+          model_answer: errorMsg,
+          reasoning_trace: `Unexpected failure: ${innerErr.message}`
+        });
       }
 
       // 6. Save intermediate results to file
