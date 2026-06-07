@@ -66,44 +66,42 @@ export const scrapeWebsite = tool(
   }
 );
 
-// ── Tool 2: Web Search (Firecrawl + DuckDuckGo Fallback) ─────────────
+// ── Tool 2: Web Search (Gemini Grounding + DDG Fallback) ─────────────
 export const webSearch = tool(
   async ({ query }) => {
-    const apiKey = process.env.FIRECRAWL_API_KEY;
     try {
-      if (!apiKey || apiKey === "YOUR_FIRECRAWL_KEY" || apiKey.length < 10) {
-        console.log(`🔍 Searching DuckDuckGo (No Firecrawl key): "${query}"...`);
-        return await fallbackSearch(query);
+      console.log(`🔍 Searching Google via Gemini Grounding: "${query}"...`);
+      const apiKey = process.env.GOOGLE_API_KEY;
+      if (!apiKey || apiKey.length < 10) {
+        throw new Error("GOOGLE_API_KEY is not configured in .env");
       }
 
+      const ai = new GoogleGenAI({ apiKey });
+      const config = {
+        tools: [{ googleSearch: {} }],
+      };
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: query,
+        config,
+      });
 
-      console.log(`🔍 Searching Firecrawl for: "${query}"...`);
-      const app = new Firecrawl({ apiKey });
-      const searchResult = await app.search(query, { limit: 5 });
-
-      const results = searchResult.data || searchResult.web || [];
-      if (results.length === 0 && searchResult.error) {
-        console.warn(`⚠️ Firecrawl error/no results. Falling back to DuckDuckGo...`);
-        return await fallbackSearch(query);
+      const text = response.text || "";
+      if (!text) {
+        throw new Error("Empty text response from Gemini Grounding.");
       }
 
-      console.log(`✅ Found ${results.length} results via Firecrawl.`);
-      return results
-        .map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.description || r.snippet || r.text || ""}`)
-        .join("\n\n");
+      console.log(`✅ Grounded search response fetched (${text.length} chars).`);
+      return text;
     } catch (err) {
-      if (err.message?.includes("402") || err.status === 402) {
-        console.warn(`💰 Firecrawl Payment Required (402). Falling back to DuckDuckGo...`);
-      } else {
-        console.warn(`⚠️ Firecrawl failed (${err.message}). Using DuckDuckGo fallback...`);
-      }
+      console.warn(`⚠️ Gemini Grounding failed (${err.message}). Falling back to DuckDuckGo...`);
       return await fallbackSearch(query);
     }
-
   },
   {
     name: "web_search",
-    description: "Search the web for current information. Uses Firecrawl with a robust DuckDuckGo fallback.",
+    description: "Search the web for current information. Uses Gemini Google Search Grounding for highly accurate and grounded results, with a DuckDuckGo fallback.",
     schema: z.object({
       query: z.string().describe("The search query"),
     }),
@@ -181,24 +179,51 @@ export const readFile = tool(
 
 // ── Tool 5: YouTube Transcript (yt_transcript) ───────────────────────
 export const ytTranscript = tool(
-  async ({ video_url }) => {
-    const tmpSubFile = path.join(TMP_DIR, `subs_${Date.now()}`);
-    const ffmpegPath = "ffmpeg"; // Use from path as verified
-
+  async ({ video_url, question }) => {
     try {
-      console.log(`📺 Fetching transcript for: ${video_url}...`);
+      console.log(`📺 Processing YouTube video: ${video_url}...`);
       
+      const errors = [];
+      const promptText = question || "Provide a complete, highly detailed chronological transcription or extremely detailed summary of the video content, capturing all spoken parts and key discussions in maximum detail.";
+
+      // 1. Primary: Use gemini-3-flash-preview with new GoogleGenAI SDK
+      if (process.env.GOOGLE_API_KEY) {
+        try {
+          console.log("📺 Trying Gemini 3 Flash Preview direct YouTube processing...");
+          const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [
+              {
+                fileData: {
+                  fileUri: video_url,
+                },
+              },
+              { text: promptText }
+            ],
+          });
+          if (response && response.text) {
+            console.log("✅ Successfully processed video via Gemini 3 Flash Preview.");
+            return response.text;
+          }
+        } catch (err) {
+          console.warn("⚠️ Gemini 3 Flash Preview direct YouTube processing failed:", err.message);
+          errors.push(`Gemini direct: ${err.message}`);
+        }
+      }
+
+      // 2. Fallback: Local yt-dlp parsing
+      console.log("📺 Falling back to yt-dlp subtitle download...");
+      const tmpSubFile = path.join(TMP_DIR, `subs_${Date.now()}`);
       const env = { ...process.env };
-      // Try to get English subtitles (manual or auto)
       const cmd = `python -m yt_dlp --skip-download --write-auto-subs --write-subs --sub-lang "en.*" --convert-subs srt --output "${tmpSubFile}" "${video_url}"`;
       
       try {
-          execSync(cmd, { encoding: "utf-8", timeout: 60000, env, cwd: TMP_DIR });
+        execSync(cmd, { encoding: "utf-8", timeout: 60000, env, cwd: TMP_DIR });
       } catch (execErr) {
-          console.warn("⚠️ yt-dlp command failed or timed out. Checking for partial results...");
+        console.warn("⚠️ yt-dlp command failed or timed out. Checking for partial results...");
       }
       
-      // Find the generated subtitle file (prefer .srt, then .vtt)
       const files = fs.readdirSync(TMP_DIR);
       const baseName = path.basename(tmpSubFile);
       const subFile = files.find(f => f.startsWith(baseName) && (f.endsWith(".srt") || f.endsWith(".vtt")));
@@ -210,31 +235,32 @@ export const ytTranscript = tool(
         
         let fallbackInfo = `TITLE: ${metadata.title}\nCHANNEL: ${metadata.uploader}\nUPLOAD DATE: ${metadata.upload_date}\n\nDESCRIPTION:\n${metadata.description || "No description."}`;
         
-        return `TRANSCRIPT NOT AVAILABLE.\n\nFallback Metadata:\n${fallbackInfo.slice(0, 10000)}\n\n(Note: Search the web for video content or look at comments if this is insufficient.)`;
+        return `TRANSCRIPT NOT AVAILABLE via yt-dlp.\n\nFallback Metadata:\n${fallbackInfo.slice(0, 10000)}\n\n(Note: Search the web for video content or look at comments if this is insufficient.)`;
       }
 
       const subPath = path.join(TMP_DIR, subFile);
       let content = fs.readFileSync(subPath, "utf-8");
       
-      // Better SRT/VTT Cleanup
+      // Cleanup subtitles
       content = content
-        .replace(/^WEBVTT.*\r?\n/g, "") // Remove VTT header
-        .replace(/\d{2}:\d{2}:\d{2}[,.]\d{3} --> \d{2}:\d{2}:\d{2}[,.]\d{3}.*\r?\n/g, "") // Remove timestamps
-        .replace(/^\d+\r?\n/gm, "") // Remove line numbers
-        .replace(/<[^>]*>/g, "") // Remove HTML tags
-        .replace(/\{\\.*?\}/g, "") // Remove subtitle formatting
-        .replace(/\r?\n\r?\n+/g, "\n") // Remove extra newlines
+        .replace(/^WEBVTT.*\r?\n/g, "")
+        .replace(/\d{2}:\d{2}:\d{2}[,.]\d{3} --> \d{2}:\d{2}:\d{2}[,.]\d{3}.*\r?\n/g, "")
+        .replace(/^\d+\r?\n/gm, "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/\{\\.*?\}/g, "")
+        .replace(/\r?\n\r?\n+/g, "\n")
         .trim();
 
-      console.log(`✅ Fetched ${content.length} characters of transcript.`);
-      // Cleanup all temporary files for this request
+      console.log(`✅ Fetched ${content.length} characters of transcript via yt-dlp.`);
+      
+      // Clean up files
       files.forEach(f => {
-          if (f.startsWith(baseName)) {
-              try { fs.unlinkSync(path.join(TMP_DIR, f)); } catch {}
-          }
+        if (f.startsWith(baseName)) {
+          try { fs.unlinkSync(path.join(TMP_DIR, f)); } catch {}
+        }
       });
 
-      return content.slice(0, 20000); 
+      return content.slice(0, 20000);
     } catch (err) {
       console.error(`💥 YouTube tool error:`, err.message);
       return `YouTube tool error: ${err.message}. Try searching the web for the video title.`;
@@ -242,9 +268,10 @@ export const ytTranscript = tool(
   },
   {
     name: "yt_transcript",
-    description: "MANDATORY for YouTube links. Fetches subtitles/transcript or detailed metadata if transcript is unavailable.",
+    description: "MANDATORY for YouTube links. Fetches the detailed transcript, summary, or answers questions about the video.",
     schema: z.object({
       video_url: z.string().describe("Full YouTube video URL"),
+      question: z.string().optional().describe("Optional question or request about the video content"),
     }),
   }
 );
@@ -297,60 +324,189 @@ export const huggingfaceHub = tool(
 export const analyzeImage = tool(
   async ({ file_path, question }) => {
     try {
-      console.log(`👁️ Analyzing image: ${file_path}...`);
+      console.log(`👁️ Analyzing image from: ${file_path}...`);
       
-      // Guard against common placeholder hallucinations
-      if (file_path === "image_file_path" || file_path.includes("<") || file_path.includes("{")) {
-        return `ERROR: You passed a placeholder path "${file_path}". You MUST use the actual absolute path provided in the task notes (it usually starts with D:\\ or C:\\). Check your context for the path.`;
+      let base64 = "";
+      let mediaType = "image/jpeg";
+
+      if (file_path.startsWith("http://") || file_path.startsWith("https://")) {
+        console.log(`👁️ Fetching image from URL: "${file_path}"...`);
+        const response = await fetch(file_path);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image from URL. Status: ${response.status}`);
+        }
+        const imageArrayBuffer = await response.arrayBuffer();
+        base64 = Buffer.from(imageArrayBuffer).toString('base64');
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.startsWith("image/")) {
+          mediaType = contentType;
+        } else {
+          try {
+            const parsedUrl = new URL(file_path);
+            const ext = path.extname(parsedUrl.pathname).slice(1).toLowerCase();
+            if (ext) {
+              mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+            }
+          } catch (e) {
+            console.warn("⚠️ Failed to parse extension from URL, defaulting to image/jpeg:", e.message);
+          }
+        }
+      } else {
+        // Guard against common placeholder hallucinations
+        if (file_path === "image_file_path" || file_path.includes("<") || file_path.includes("{")) {
+          return `ERROR: You passed a placeholder path "${file_path}". You MUST use the actual absolute path provided in the task notes (it usually starts with D:\\ or C:\\). Check your context for the path.`;
+        }
+
+        if (!fs.existsSync(file_path)) {
+          return `File not found: ${file_path}. Make sure to use the absolute path provided in the instructions.`;
+        }
+
+        const buffer = fs.readFileSync(file_path);
+        base64 = buffer.toString("base64");
+        const ext = path.extname(file_path).slice(1).toLowerCase();
+        mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
       }
 
-      if (!fs.existsSync(file_path)) return `File not found: ${file_path}. Make sure to use the absolute path provided in the instructions.`;
+      const errors = [];
 
-      const buffer = fs.readFileSync(file_path);
-      const base64 = buffer.toString("base64");
-      const ext = path.extname(file_path).slice(1).toLowerCase();
-      const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+      if (process.env.GOOGLE_API_KEY) {
+        try {
+          console.log("👁️ Trying Gemini 3 Flash Preview for image analysis...");
+          const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+          const result = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [
+              {
+                inlineData: {
+                  mimeType: mediaType,
+                  data: base64,
+                },
+              },
+              { text: question }
+            ],
+          });
+          if (result && result.text) {
+            return result.text;
+          }
+        } catch (err) {
+          console.warn("⚠️ Gemini 3 Flash Preview failed. Error:", err.message);
+          errors.push(`Gemini 3 Flash Preview: ${err.message}`);
 
-      // Use Gemini, then GitHub Inference, then Hugging Face, then local Ollama
-      const useGoogle = !!process.env.GOOGLE_API_KEY;
-      const useGithub = !!process.env.GITHUB_TOKEN;
-      const useHF = !!process.env.HF_TOKEN;
-      
-      if (useGoogle) {
-        const ai = new GoogleGenAI(process.env.GOOGLE_API_KEY);
-        const model = ai.getGenerativeModel({ model: "gemini-2.0-flash" });
-        const result = await model.generateContent([
-          {
-            inlineData: {
-              mimeType: mediaType,
-              data: base64,
+          // Fallback to Gemini 2.5 Flash
+          try {
+            console.log("👁️ Trying Gemini 2.5 Flash for image analysis...");
+            const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+            const result = await ai.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: [
+                {
+                  inlineData: {
+                    mimeType: mediaType,
+                    data: base64,
+                  },
+                },
+                { text: question }
+              ],
+            });
+            if (result && result.text) {
+              return result.text;
+            }
+          } catch (gErr) {
+            console.warn("⚠️ Gemini 2.5 Flash failed. Error:", gErr.message);
+            errors.push(`Gemini 2.5 Flash: ${gErr.message}`);
+          }
+        }
+      }
+
+      if (process.env.GITHUB_TOKEN) {
+        try {
+          console.log("👁️ Trying GitHub Inference (gpt-4o) for image analysis...");
+          const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${process.env.GITHUB_TOKEN}`,
             },
-          },
-          { text: question },
-        ]);
-        const response = await result.response;
-        return response.text();
-      } else {
-        const baseUrl = useGithub 
-          ? "https://models.inference.ai.azure.com" 
-          : (useHF ? "https://api-inference.huggingface.co/v1" : "http://localhost:11434/v1");
-        
-        const apiKey = useGithub 
-          ? process.env.GITHUB_TOKEN 
-          : (useHF ? process.env.HF_TOKEN : "ollama");
-        
-        const modelName = useGithub 
-          ? "gpt-4o" 
-          : (useHF ? "Qwen/Qwen2-VL-7B-Instruct" : "llava");
+            body: JSON.stringify({
+              model: "gpt-4o",
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: question },
+                    {
+                      type: "image_url",
+                      image_url: {
+                        url: `data:${mediaType};base64,${base64}`,
+                      },
+                    },
+                  ],
+                },
+              ],
+              temperature: 0,
+            }),
+          });
+          const data = await response.json();
+          if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+          if (data.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content;
+          }
+        } catch (err) {
+          console.warn("⚠️ GitHub gpt-4o failed. Error:", err.message);
+          errors.push(`GitHub GPT-4o: ${err.message}`);
+        }
+      }
 
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+      if (process.env.HF_TOKEN) {
+        try {
+          console.log("👁️ Trying Hugging Face Inference (Qwen2-VL-7B-Instruct) for image analysis...");
+          const response = await fetch("https://api-inference.huggingface.co/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${process.env.HF_TOKEN}`,
+            },
+            body: JSON.stringify({
+              model: "Qwen/Qwen2-VL-7B-Instruct",
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: question },
+                    {
+                      type: "image_url",
+                      image_url: {
+                        url: `data:${mediaType};base64,${base64}`,
+                      },
+                    },
+                  ],
+                },
+              ],
+              temperature: 0,
+            }),
+          });
+          const data = await response.json();
+          if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+          if (data.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content;
+          }
+        } catch (err) {
+          console.warn("⚠️ Hugging Face Qwen2-VL failed. Error:", err.message);
+          errors.push(`HF Qwen2-VL: ${err.message}`);
+        }
+      }
+
+      // Try local Ollama as final fallback
+      try {
+        console.log("👁️ Trying Local Ollama (llava) for image analysis...");
+        const response = await fetch("http://localhost:11434/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
+            "Authorization": "Bearer ollama",
           },
           body: JSON.stringify({
-            model: modelName,
+            model: "llava",
             messages: [
               {
                 role: "user",
@@ -368,11 +524,17 @@ export const analyzeImage = tool(
             temperature: 0,
           }),
         });
-
         const data = await response.json();
         if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-        return data.choices[0].message.content;
+        if (data.choices?.[0]?.message?.content) {
+          return data.choices[0].message.content;
+        }
+      } catch (err) {
+        console.warn("⚠️ Local Ollama failed. Error:", err.message);
+        errors.push(`Ollama: ${err.message}`);
       }
+
+      throw new Error(`All image analysis providers failed: [${errors.join(" | ")}]`);
     } catch (err) {
       console.error(`💥 Image analysis error:`, err);
       return `Image analysis error: ${err.message}`;
@@ -380,132 +542,14 @@ export const analyzeImage = tool(
   },
   {
     name: "analyze_image",
-    description: "Analyze an image file and answer a question about it. Use for chess positions, diagrams, charts, etc.",
+    description: "Analyze an image (either a local file path or a web URL) and answer a question about it. Use for chess positions, diagrams, charts, etc.",
     schema: z.object({
-      file_path: z.string().describe("Path to the image file"),
+      file_path: z.string().describe("Path or Web URL to the image file"),
       question: z.string().describe("What to look for in the image"),
     }),
   }
 );
 
-// ── Tool 8: Wikipedia Search (wikipedia_search) ──────────────────────
-export const wikipediaSearch = tool(
-  async ({ title, revision_date }) => {
-    try {
-      console.log(`📚 Wikipedia lookup: "${title}"${revision_date ? ` (revisions on ${revision_date})` : ""}...`);
-
-      if (revision_date) {
-        // Get revision history for a specific date via MediaWiki API
-        const revUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=revisions&rvstart=${revision_date}T23:59:59Z&rvend=${revision_date}T00:00:00Z&rvprop=ids|timestamp|user|comment|size&rvlimit=50&format=json&origin=*`;
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
-        
-        try {
-          const revRes = await fetch(revUrl, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
-            signal: controller.signal
-          });
-          const contentType = revRes.headers.get("content-type") || "";
-          const text = await revRes.text();
-          let revData;
-          try {
-            revData = JSON.parse(text);
-          } catch (jsonErr) {
-            console.error("Wikipedia API JSON parsing failed:", jsonErr);
-            return `Wikipedia error: API returned non-JSON or invalid content. Is the request blocked or rate-limited? Content: ${text.slice(0, 150)}`;
-          }
-
-          const pages = revData.query?.pages;
-          if (!pages) return `No Wikipedia article found for "${title}".`;
-
-          const pageId = Object.keys(pages)[0];
-          if (pageId === "-1") return `Wikipedia article "${title}" does not exist.`;
-
-          const revisions = pages[pageId].revisions;
-          if (!revisions || revisions.length === 0) {
-            return `No revisions found for "${title}" on ${revision_date}.`;
-          }
-
-          const formatted = revisions.map((r, i) =>
-            `[${i + 1}] Rev ${r.revid} | ${r.timestamp} | User: ${r.user} | Size: ${r.size} bytes\n    Comment: ${r.comment || "(no comment)"}`
-          ).join("\n");
-
-          return `Revisions for "${pages[pageId].title}" on ${revision_date}:\n\n${formatted}`;
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      }
-
-      // Standard search logic (no revision date)
-      const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&format=json&prop=extracts|revisions&exlimit=1&titles=${encodeURIComponent(title)}&explaintext=1&exsectionformat=plain&rvprop=content&rvslots=main&origin=*`;
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
-      
-      try {
-        const res = await fetch(searchUrl, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
-          signal: controller.signal
-        });
-        const contentType = res.headers.get("content-type") || "";
-        const text = await res.text();
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch (jsonErr) {
-          console.error("Wikipedia API JSON parsing failed:", jsonErr);
-          return `Wikipedia error: API returned non-JSON or invalid content. Is the request blocked or rate-limited? Content: ${text.slice(0, 150)}`;
-        }
-
-        const pages = data.query?.pages;
-        if (!pages) return `No Wikipedia article found for "${title}".`;
-
-        const pageId = Object.keys(pages)[0];
-        if (pageId === "-1") return `Wikipedia article "${title}" does not exist.`;
-
-        const page = pages[pageId];
-        let content = page.extract || "";
-
-        // If extract is empty, try to get it from revisions (raw wikitext)
-        if (!content && page.revisions?.[0]?.slots?.main?.content) {
-          content = page.revisions[0].slots.main.content;
-        }
-
-        // Check for Discography section specifically
-        const hasDiscography = content.toLowerCase().includes("discography");
-        const hasListOfWorks = content.toLowerCase().includes("list of works");
-        
-        console.log(`✅ Wikipedia: got ${content.length} chars for "${page.title}".${hasDiscography ? " (Discography found)" : ""}`);
-
-        let responseText = content;
-        const limit = 15_000;
-        if (responseText.length > limit) {
-          responseText = responseText.slice(0, limit) + `\n\n[TRUNCATED — showing first ${limit} characters]`;
-          
-          if (hasDiscography || hasListOfWorks) {
-              responseText += `\n\nTIP: This article has a ${hasDiscography ? 'Discography' : 'List of works'} section which may be truncated. Try searching for a specific article like "${page.title} discography" or "${page.title} works" for a complete list.`;
-          }
-        }
-        
-        return responseText || "No content found in this article.";
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    } catch (err) {
-      console.error("💥 Wikipedia error:", err);
-      return `Wikipedia error: ${err.message}`;
-    }
-  },
-  {
-    name: "wikipedia_search",
-    description: "Search Wikipedia for article summaries or revision history. Use for encyclopedic facts, biographical data, or when asked about Wikipedia edit history, contributors, or specific article versions on a date.",
-    schema: z.object({
-      title: z.string().describe("Wikipedia article title (e.g. 'Albert Einstein', 'Python (programming language)')"),
-      revision_date: z.string().optional().describe("YYYY-MM-DD date to get revision history for that specific day"),
-    }),
-  }
-);
 
 // ── Tool 9: Wayback Machine (wayback_machine) ────────────────────────
 export const waybackMachine = tool(
@@ -680,6 +724,5 @@ export const allTools = [
   ytTranscript, 
   analyzeImage,
   huggingfaceHub,
-  wikipediaSearch,
   waybackMachine
 ];

@@ -119,10 +119,60 @@ async function main() {
     const scoreReport = await submitAnswers(username, agentUrl, answers);
 
     console.log("\n--- SCORE REPORT ---");
-    console.log(`Total Attempted: ${scoreReport.total_attempted}`);
-    console.log(`Correct Count:   ${scoreReport.correct_count}`);
+    console.log(`Total Attempted: ${scoreReport.total_attempted || scoreReport.total}`);
+    console.log(`Correct Answers: ${scoreReport.correct_count || scoreReport.correct} out of 20`);
     console.log(`Score:           ${(scoreReport.score * 100).toFixed(2)}%`);
     console.log(`Message:         ${scoreReport.message || "No message"}`);
+
+    // Log which specific answers were correct if details are provided (server formats vary).
+    const answerByTaskId = new Map(answers.map((a) => [a.task_id, a.submitted_answer]));
+
+    const details = scoreReport.details;
+    const normalized = [];
+    if (Array.isArray(details)) {
+      for (const d of details) {
+        if (!d) continue;
+        const taskId = d.task_id || d.id || d.task || d.taskId;
+        if (!taskId) continue;
+        const correct = Boolean(d.is_correct ?? d.correct ?? d.isCorrect);
+        normalized.push({
+          task_id: taskId,
+          correct,
+          expected: d.expected_answer ?? d.expected ?? d.answer,
+          submitted: d.submitted_answer ?? d.submitted ?? answerByTaskId.get(taskId),
+        });
+      }
+    } else if (details && typeof details === "object") {
+      for (const [taskId, v] of Object.entries(details)) {
+        if (v && typeof v === "object") {
+          normalized.push({
+            task_id: taskId,
+            correct: Boolean(v.is_correct ?? v.correct ?? v.isCorrect),
+            expected: v.expected_answer ?? v.expected ?? v.answer,
+            submitted: v.submitted_answer ?? v.submitted ?? answerByTaskId.get(taskId),
+          });
+        } else {
+          normalized.push({
+            task_id: taskId,
+            correct: Boolean(v),
+            expected: undefined,
+            submitted: answerByTaskId.get(taskId),
+          });
+        }
+      }
+    }
+
+    if (normalized.length > 0) {
+      normalized.sort((a, b) => String(a.task_id).localeCompare(String(b.task_id)));
+      console.log("\n--- PER-TASK RESULTS ---");
+      for (const r of normalized) {
+        const tag = r.correct ? "[OK]   " : "[WRONG]";
+        const submitted = r.submitted != null ? String(r.submitted) : "(missing)";
+        const expected =
+          r.expected != null && String(r.expected).length > 0 ? ` expected="${String(r.expected)}"` : "";
+        console.log(`${tag} ${r.task_id} submitted="${submitted}"${expected}`);
+      }
+    }
 
     console.log("\nModel usage summary:");
     console.log(`  GitHub: ${stats.github}`);
@@ -135,4 +185,3 @@ async function main() {
 }
 
 main();
-
