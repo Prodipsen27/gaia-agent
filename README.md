@@ -1,141 +1,142 @@
----
-title: GAIA Agent
-emoji: 🤖
-colorFrom: blue
-colorTo: purple
-sdk: docker
-pinned: false
----
-
-# 🥇 GAIA Benchmark Agent (LangGraph + Multi-Step Reasoning)
+# 🤖 GAIA Benchmark Agent
 
 [![GAIA Level-1 Score](https://img.shields.io/badge/GAIA%20Level--1%20Score-35.00%25-brightgreen)](https://huggingface.co/spaces/zxpr27/gaia-agent)
-[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Space%20Deployed-blue)](https://huggingface.co/spaces/zxpr27/gaia-agent)
-[![LangGraph](https://img.shields.io/badge/Graph%20Framework-LangGraph%20JS-purple)](https://github.com/langchain-ai/langgraphjs)
-[![LLM Pool](https://img.shields.io/badge/LLMs-Gemini%20%7C%20GPT--4o%20%7C%20Qwen-orange)](#dynamic-model-pooling)
+[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Deployed-blue)](https://huggingface.co/spaces/zxpr27/gaia-agent)
+[![Framework](https://img.shields.io/badge/Framework-LangGraph%20JS-purple)](https://github.com/langchain-ai/langgraphjs)
+[![LLM Pool](https://img.shields.io/badge/LLMs-Gemini%20%7C%20GPT--4o%20%7C%20Qwen-orange)](#model-pool)
 
-A robust, multi-step agent designed to solve the **GAIA (General AI Assistants) Benchmark** validation questions. Built using **LangGraph JS** for structured state orchestration, it leverages a dynamic pool of state-of-the-art LLMs (Gemini, GPT-4o, and Qwen-2.5) alongside a rich tool suite to perform RAG, web search, code execution, image analysis, and video parsing.
-
----
-
-## 📐 System Architecture
-
-The agent is modeled as a stateful cyclic graph using **LangGraph**. It continuously reasons, invokes appropriate tools, stores outcomes, and refines its approach in a structured loop until it either resolves the prompt or exhausts its computation budget.
-
-```mermaid
-graph TD
-    %% Styling
-    classDef startEnd fill:#F5F5F7,stroke:#1D1D1F,stroke-width:2px,rx:20px;
-    classDef nodeStyle fill:#EBF5FF,stroke:#0066CC,stroke-width:2px,rx:8px;
-    classDef toolStyle fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,rx:8px;
-    classDef decisionStyle fill:#FFFBEB,stroke:#D97706,stroke-width:2px,rx:8px;
-
-    START([START]):::startEnd --> Agent[Agent Node <br> ChatOpenAI / Gemini / Qwen]:::nodeStyle
-    
-    Agent --> Router{Router <br> Tool calls requested? <br> Or budget exceeded?}:::decisionStyle
-    
-    Router -- Yes: Execute Tools --> Tools[Tools Node <br> execute_python, scrape_website, web_search, etc.]:::toolStyle
-    Tools --> Agent
-    
-    Router -- No / Budget Exceeded --> Formatter[Formatter Node <br> Extract Final Answer]:::nodeStyle
-    Formatter --> END([END]):::startEnd
-```
-
-### Flow Breakdown
-
-1. **State Initialization**: The graph state is initialized with the question, the run parameters, and any optional file attachment paths.
-2. **Agent Node**: Selects the best LLM from the model pool based on task characteristics (e.g. Gemini for multimodal tasks) and sends the query. It returns any tool call commands or direct responses.
-3. **Conditional Router**:
-   - If the LLM requests tool calls and the budget is under **6 rounds**, it routes to the **Tools Node**.
-   - If no tools are requested or the budget is exceeded, it routes to the **Formatter Node** to conclude execution.
-4. **Tools Node**: Executes all tool calls in parallel, clamps outputs (to protect context windows), and appends the result to the conversation state before looping back to the Agent Node.
-5. **Formatter Node**: Extracts and standardizes the output to match the strict formatting required by the GAIA evaluation system.
+A multi-step reasoning agent built to solve [GAIA benchmark](https://huggingface.co/datasets/gaia-benchmark/GAIA) questions. Powered by **LangGraph JS** for structured graph orchestration, it combines a dynamic pool of frontier LLMs with a rich tool suite — covering web search, code execution, image analysis, video parsing, and more.
 
 ---
 
-## 🧠 Core Engine Mechanics
+## Table of Contents
 
-### Dynamic Model Pooling & Fallbacks
-To ensure maximum availability and bypass rate limits, the agent manages a dynamic LLM pool:
-* **Gemini 2.5 Flash**: The primary choice for multimodal tasks containing images or YouTube video links.
-* **GPT-4o (via GitHub Models)**: The main text-based reasoning agent.
-* **Qwen-2.5-72B-Instruct (via Hugging Face API)**: A robust fallback for complex tool-use scenarios.
-* **Groq / Llama 3**: Fast backup reasoning node.
-
-If a primary model encounters a quota/rate limit error (429), the graph automatically falls back to the next model in the pool to continue the task seamlessly.
-
-### Robust Tool Suite
-* 🐍 **Python Code Executor (`execute_python`)**: Executes python scripts in a sandbox environment. Fully equipped with `pdfplumber`, `openpyxl`, `pillow`, `pandas`, `beautifulsoup4`, and `duckduckgo-search` to handle complex binary file parsing, math, and data analysis.
-* 🔍 **Web Search (`web_search`)**: Uses Gemini Google Search Grounding to fetch highly accurate and verified results, with a programmatic DuckDuckGo API fallback.
-* 🌐 **Website Scraper (`scrape_website`)**: Scrapes target URLs into clean markdown using Firecrawl, with a basic request scraper as fallback.
-* 📼 **Wayback Machine (`wayback_machine`)**: Resolves historical web page snapshots from `archive.org` for time-dependent questions.
-* 📺 **YouTube Parser (`yt_transcript`)**: Fetches detailed transcripts or video metadata from YouTube links using `yt-dlp` or Gemini's direct audio-visual processing.
-* 🖼️ **Image Analyzer (`analyze_image`)**: Employs multimodal vision capabilities (Gemini 2.5 Flash, GPT-4o, Qwen2-VL) to extract answers from chess diagrams, maps, charts, and diagrams.
-* 🤗 **Hugging Face Hub tool (`huggingface_hub`)**: Inspects model, dataset, author, and download statistics directly from the HF Hub API.
+- [Architecture](#architecture)
+- [How It Works](#how-it-works)
+- [Model Pool](#model-pool)
+- [Tool Suite](#tool-suite)
+- [Benchmark Results](#benchmark-results)
+- [Setup](#setup)
+- [Docker Deployment](#docker-deployment)
 
 ---
 
-## 📈 GAIA Benchmark Results
+## Architecture
 
-The agent achieved a score of **35.00%** on the validation questions.
+The agent runs as a stateful cyclic graph using LangGraph. It reasons, calls tools, stores results, and refines its approach in a continuous loop — until the question is resolved or the computation budget is exhausted.
+
+<p align="center">
+  <img src="diagram.svg" alt="GAIA Agent Architecture" width="560"/>
+</p>
+
+---
+
+## How It Works
+
+1. **State initialization** — The graph is seeded with the question, run parameters, and any file attachments.
+
+2. **Agent node** — Selects the best LLM from the pool based on task characteristics (e.g. Gemini for multimodal inputs). Returns tool calls or a direct response.
+
+3. **Router** — Decides what happens next:
+   - Tool calls requested + budget under 6 rounds → Tools node
+   - No tool calls, or budget exceeded → Formatter node
+
+4. **Tools node** — Executes all requested tools in parallel, clamps outputs to protect context window size, then appends results to the conversation and loops back to the Agent.
+
+5. **Formatter node** — Extracts and standardizes the final answer to match the strict format required by the GAIA evaluation system.
+
+---
+
+## Model Pool
+
+The agent manages a dynamic LLM pool to maximize availability and route around rate limits. If a model returns a `429` error, the graph automatically falls back to the next model in the pool.
+
+| Model | Role |
+|---|---|
+| Gemini 2.5 Flash | Primary — multimodal tasks (images, YouTube) |
+| GPT-4o (via GitHub Models) | Primary — text-based reasoning |
+| Qwen-2.5-72B-Instruct (via HF API) | Fallback — complex tool-use scenarios |
+| Llama 3 (via Groq) | Fast backup reasoning node |
+
+---
+
+## Tool Suite
+
+| Tool | Description |
+|---|---|
+| 🐍 `execute_python` | Sandboxed Python execution. Pre-loaded with `pdfplumber`, `openpyxl`, `pandas`, `pillow`, `beautifulsoup4`, and `duckduckgo-search`. |
+| 🔍 `web_search` | Gemini Google Search Grounding for verified results; DuckDuckGo API as fallback. |
+| 🌐 `scrape_website` | Converts URLs to clean markdown via Firecrawl, with a basic requests-based fallback. |
+| 📼 `wayback_machine` | Retrieves historical page snapshots from `archive.org` for time-sensitive questions. |
+| 📺 `yt_transcript` | Fetches YouTube transcripts and metadata via `yt-dlp` or Gemini's audio-visual processing. |
+| 🖼️ `analyze_image` | Multimodal image analysis (Gemini 2.5 Flash, GPT-4o, Qwen2-VL) for charts, maps, diagrams, and chess positions. |
+| 🤗 `huggingface_hub` | Queries the HF Hub API for model cards, dataset metadata, and download stats. |
+
+---
+
+## Benchmark Results
+
+Evaluated on the GAIA validation set with exact-match scoring hosted by the Hugging Face Agents Course.
 
 | Metric | Value |
-| :--- | :--- |
-| **Total Tasks Attempted** | 20 |
-| **Correct Answers** | 7 |
-| **Accuracy Score** | **35.00%** |
-| **Evaluation Level** | Level-1 / Level-2 Questions |
-| **Primary Framework** | LangGraph JS (v1.3.0) |
-
-*The evaluation answers are verified via an exact-match system hosted by the Hugging Face Agents Course.*
+|---|---|
+| Total tasks attempted | 20 |
+| Correct answers | 7 |
+| Accuracy | **35.00%** |
+| Evaluation level | Level-1 / Level-2 |
+| Framework version | LangGraph JS v1.3.0 |
 
 ---
 
-## ⚙️ Setup & Local Execution
+## Setup
 
 ### Prerequisites
-* Node.js (v18+)
-* Python 3 with pip installed (for the local tool sandbox)
+
+- Node.js v18+
+- Python 3 with `pip`
 
 ### Installation
-1. Clone the repository:
-   ```bash
-   git clone https://huggingface.co/spaces/zxpr27/gaia-agent
-   cd gaia-agent
-   npm install
-   ```
 
-2. Configure environment variables in `.env`:
-   ```ini
-   GITHUB_TOKEN="your_github_token"
-   GOOGLE_API_KEY="your_gemini_api_key"
-   FIRECRAWL_API_KEY="your_firecrawl_key"
-   HF_TOKEN="your_hugging_face_token"
-   HF_USERNAME="your_hf_username"
-   ```
+```bash
+git clone https://huggingface.co/spaces/zxpr27/gaia-agent
+cd gaia-agent
+npm install
+```
 
-### Running the Project
-* **API Connectivity Test**:
-  ```bash
-  npm run test
-  ```
-* **Run Solver**:
-  ```bash
-  node src/index.js
-  ```
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```ini
+GITHUB_TOKEN="your_github_token"
+GOOGLE_API_KEY="your_gemini_api_key"
+FIRECRAWL_API_KEY="your_firecrawl_key"
+HF_TOKEN="your_hugging_face_token"
+HF_USERNAME="your_hf_username"
+```
+
+### Running
+
+```bash
+# Test API connectivity
+npm run test
+
+# Run the solver
+node src/index.js
+```
 
 ---
 
-## 🐳 Docker & HF Spaces Deployment
+## Docker Deployment
 
-The space is configured to run inside a Docker environment on Hugging Face.
+The space runs inside a Docker container on Hugging Face.
 
-### Build and Run Docker Container Locally
-1. Build the image:
-   ```bash
-   docker build -t gaia-agent .
-   ```
-2. Run the container:
-   ```bash
-   docker run --env-file .env -p 7860:7860 gaia-agent
-   ```
+### Build and run locally
+
+```bash
+# Build
+docker build -t gaia-agent .
+
+# Run
+docker run --env-file .env -p 7860:7860 gaia-agent
+```
